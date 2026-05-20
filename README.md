@@ -1,6 +1,6 @@
 # SAP RAG Assistant
 
-An intelligent SAP documentation Q&A system built with **FastAPI**, **LangChain**, and **FAISS**.  
+An intelligent SAP documentation Q&A system built with **FastAPI**, **Streamlit**, **LangChain**, and **FAISS**.  
 Upload SAP PDF manuals → ask natural-language questions → receive grounded answers with source citations.
 
 ---
@@ -9,7 +9,8 @@ Upload SAP PDF manuals → ask natural-language questions → receive grounded a
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                         Client (curl / browser / Python)             │
+│                    Streamlit UI (frontend/app.py)                    │
+│         PDF upload · Chat Q&A · Source citations · Doc list          │
 └───────────────────┬──────────────────────────────┬───────────────────┘
                     │ POST /upload (PDF)            │ POST /query
                     ▼                              ▼
@@ -27,9 +28,9 @@ Upload SAP PDF manuals → ask natural-language questions → receive grounded a
 │  ingest_pdf()                        query()                         │
 │  ┌──────────────────────┐            ┌───────────────────────────┐   │
 │  │ 1. PyPDFLoader       │            │ 1. similarity_search()    │   │
-│  │ 2. Chunk (512t/100o) │            │    → top-k chunks         │   │
-│  │ 3. OpenAI Embeddings │            │ 2. Build context string   │   │
-│  │ 4. FAISS.add_docs()  │            │ 3. ChatOpenAI (gpt-4o)    │   │
+│  │ 2. Chunk (512t/100o) │            │    → top-k unique chunks  │   │
+│  │ 3. Gemini Embeddings │            │ 2. Build context string   │   │
+│  │ 4. FAISS.add_docs()  │            │ 3. gemini-2.5-flash-lite  │   │
 │  │ 5. save_local()      │            │ 4. Return answer+sources  │   │
 │  └──────────────────────┘            └───────────────────────────┘   │
 └──────────────────────────────────┬───────────────────────────────────┘
@@ -44,8 +45,8 @@ Upload SAP PDF manuals → ask natural-language questions → receive grounded a
 
 | Step | Action |
 |------|--------|
-| Upload | PDF → PyPDFLoader → 512-token chunks (100-token overlap) → OpenAI embeddings → FAISS index |
-| Query  | Question → embed → FAISS similarity search → top-k chunks → GPT-4o → cited answer |
+| Upload | PDF → PyPDFLoader → 512-token chunks (100-token overlap) → `gemini-embedding-001` → FAISS index |
+| Query  | Question → embed → FAISS similarity search → deduplicated top-k chunks → `gemini-2.5-flash-lite` → cited answer |
 
 ---
 
@@ -53,6 +54,9 @@ Upload SAP PDF manuals → ask natural-language questions → receive grounded a
 
 ```
 sap-rag-assistant/
+├── frontend/
+│   ├── app.py               # Streamlit UI (upload, chat, citations, doc list)
+│   └── requirements.txt     # Frontend dependencies (streamlit, requests)
 ├── src/
 │   ├── main.py              # FastAPI app + lifespan + endpoints
 │   ├── config.py            # Pydantic Settings (reads .env)
@@ -70,7 +74,7 @@ sap-rag-assistant/
 ├── data/                    # FAISS index (git-ignored, auto-created)
 ├── uploads/                 # Temp staging for uploads (git-ignored)
 ├── Dockerfile
-├── docker-compose.yml       # API + optional PostgreSQL
+├── docker-compose.yml
 ├── .env.example
 └── requirements.txt
 ```
@@ -82,10 +86,10 @@ sap-rag-assistant/
 ### 1 — Clone and configure
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/ankita1995-ai/sap-rag-assistant.git
 cd sap-rag-assistant
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY=sk-...
+# Edit .env and set GOOGLE_API_KEY (get one at https://aistudio.google.com/apikey)
 ```
 
 ### 2 — Install dependencies
@@ -98,24 +102,44 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
+pip install -r frontend/requirements.txt
 ```
 
-### 3 — Run locally
+### 3 — Start the backend
 
 ```bash
 uvicorn src.main:app --reload
 ```
 
-Open the interactive docs at **http://localhost:8000/docs**
+API is now live at **http://localhost:8000** · Interactive docs at **http://localhost:8000/docs**
 
-### 4 — Upload a SAP document
+### 4 — Start the frontend
+
+In a second terminal:
+
+```bash
+streamlit run frontend/app.py
+```
+
+Open **http://localhost:8501** in your browser.
+
+### 5 — Use the UI
+
+1. Drop a SAP PDF in the **Upload Documents** sidebar panel — it ingests automatically
+2. Type a question in the chat box
+3. Expand **"X passage(s) from Y document(s)"** to see the source citations
+
+---
+
+## API Usage (without UI)
+
+### Upload a document
 
 ```bash
 curl -X POST http://localhost:8000/upload \
   -F "file=@/path/to/sap_mm_guide.pdf"
 ```
 
-Response:
 ```json
 {
   "filename": "sap_mm_guide.pdf",
@@ -124,7 +148,7 @@ Response:
 }
 ```
 
-### 5 — Ask a question
+### Ask a question
 
 ```bash
 curl -X POST http://localhost:8000/query \
@@ -132,7 +156,6 @@ curl -X POST http://localhost:8000/query \
   -d '{"question": "What is the procure-to-pay process in SAP MM?", "k": 4}'
 ```
 
-Response:
 ```json
 {
   "question": "What is the procure-to-pay process in SAP MM?",
@@ -142,18 +165,11 @@ Response:
       "source": "sap_mm_guide.pdf",
       "page": 12,
       "content_preview": "The standard procurement cycle starts with a purchase requisition...",
-      "relevance_score": 0.1423
+      "relevance_score": 0.4823
     }
   ],
   "processing_time_ms": 1340.5
 }
-```
-
-### 6 — Run the demo script
-
-```bash
-# Upload and query in one go:
-python examples/query_examples.py path/to/sap_doc.pdf
 ```
 
 ---
@@ -161,10 +177,10 @@ python examples/query_examples.py path/to/sap_doc.pdf
 ## Docker
 
 ```bash
-# Start the full stack (API + PostgreSQL)
+# Start the full stack
 docker-compose up --build
 
-# API-only (no Postgres)
+# API only
 docker-compose up api --build
 ```
 
@@ -178,13 +194,7 @@ docker-compose up api --build
 | `POST` | `/upload` | Ingest a PDF document into the FAISS vector store |
 | `POST` | `/query`  | Ask a question; returns an answer with source citations |
 
-### POST /upload
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `file` | `multipart/form-data` | A `.pdf` file |
-
-### POST /query
+### POST /query body
 
 ```json
 {
@@ -201,9 +211,9 @@ All settings are read from environment variables or a `.env` file:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | — | **Required.** Your OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o` | Chat completion model |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `GOOGLE_API_KEY` | — | **Required.** Get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `GOOGLE_MODEL` | `gemini-2.5-flash-lite` | Gemini chat model for answer generation |
+| `GOOGLE_EMBEDDING_MODEL` | `models/gemini-embedding-001` | Gemini embedding model |
 | `FAISS_INDEX_PATH` | `./data/faiss_index` | Directory for the persisted FAISS index |
 | `CHUNK_SIZE` | `512` | Tokens per chunk |
 | `CHUNK_OVERLAP` | `100` | Overlap tokens between consecutive chunks |
@@ -219,8 +229,6 @@ All settings are read from environment variables or a `.env` file:
 pytest tests/ -v
 ```
 
-The test suite mocks all OpenAI and FAISS calls — no API key required for tests.
-
 ---
 
 ## Chunking Strategy
@@ -229,7 +237,7 @@ Documents are split using `RecursiveCharacterTextSplitter` with tiktoken encodin
 
 - **Chunk size**: 512 tokens — large enough for semantic coherence, small enough for precise retrieval
 - **Overlap**: 100 tokens — ensures context is not lost at chunk boundaries
-- **Splitter hierarchy**: paragraph → sentence → word → character (tries to respect natural text boundaries)
+- **Splitter hierarchy**: paragraph → sentence → word → character
 
 ---
 
@@ -238,9 +246,10 @@ Documents are split using `RecursiveCharacterTextSplitter` with tiktoken encodin
 | Decision | Rationale |
 |----------|-----------|
 | FAISS (local) | Zero-infrastructure vector store; perfect for a portfolio demo. Replace with Pinecone/Weaviate for production scale. |
+| Chunk deduplication | Repeated ingestion of the same PDF would otherwise return duplicate source passages; content fingerprinting silently drops them. |
 | Thread lock on index writes | Concurrent uploads would corrupt the FAISS index without a lock. |
 | `temperature=0.0` | SAP documentation Q&A requires factual, deterministic answers. |
-| Separate `QueryResult` model | Keeps the pipeline decoupled from FastAPI's serialisation layer. |
+| Streamlit frontend | Rapid UI development in pure Python; no separate JS build pipeline needed for a portfolio demo. |
 | `allow_dangerous_deserialization=True` | Required by LangChain's FAISS loader; safe because we wrote the file ourselves. |
 
 ---
@@ -250,5 +259,5 @@ Documents are split using `RecursiveCharacterTextSplitter` with tiktoken encodin
 - [ ] PostgreSQL query history with async SQLAlchemy
 - [ ] Multi-tenant index partitioning by SAP module (MM, SD, FI…)
 - [ ] Streaming responses via `StreamingResponse`
-- [ ] Re-ranker pass (Cohere Rerank) for higher-precision retrieval
+- [ ] Re-ranker pass for higher-precision retrieval
 - [ ] Authentication (API key header)
