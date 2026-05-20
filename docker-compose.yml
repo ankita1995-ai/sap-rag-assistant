@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: sap_rag_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # persisted FAISS index
+      - ./uploads:/app/uploads    # temp upload staging
+    env_file:
+      - .env
+    environment:
+      FAISS_INDEX_PATH: /app/data/faiss_index
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  # Optional: PostgreSQL for storing query history / audit logs
+  db:
+    image: postgres:16-alpine
+    container_name: sap_rag_db
+    environment:
+      POSTGRES_USER: saprag
+      POSTGRES_PASSWORD: saprag
+      POSTGRES_DB: saprag
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saprag -d saprag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
