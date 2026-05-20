@@ -126,12 +126,20 @@ class RAGPipeline:
 
         t0 = time.perf_counter()
 
-        docs_with_scores = self._vector_store.similarity_search_with_score(question, k=k)
+        # Fetch extra candidates so deduplication doesn't leave us short
+        docs_with_scores = self._vector_store.similarity_search_with_score(question, k=k * 3)
 
         context_parts: list[str] = []
         sources: list[SourceDocument] = []
+        seen_content: set[str] = set()
 
         for doc, score in docs_with_scores:
+            # Deduplicate by exact content — identical chunks come from repeated ingestion
+            fingerprint = doc.page_content.strip()
+            if fingerprint in seen_content:
+                continue
+            seen_content.add(fingerprint)
+
             context_parts.append(doc.page_content)
             sources.append(
                 SourceDocument(
@@ -141,6 +149,8 @@ class RAGPipeline:
                     relevance_score=round(float(score), 4),
                 )
             )
+            if len(sources) == k:
+                break
 
         context = "\n\n---\n\n".join(context_parts)
         chain = _SAP_PROMPT | self.llm | StrOutputParser()
